@@ -205,6 +205,7 @@ if btn_fetch:
                 p1 = american_to_prob(t1.price)
                 p2 = american_to_prob(t2.price)
                 nv1, nv2 = remove_vig(p1, p2)
+
                 results.append({
                     "team": t1.team,
                     "odds": t1.price,
@@ -212,9 +213,21 @@ if btn_fetch:
                     "model_prob": t1.model_prob,
                     "EV_model": ev_calc(t1.model_prob, t1.price)
                 })
+
                 results.append({
                     "team": t2.team,
                     "odds": t2.price,
                     "no_vig_prob": nv2,
                     "model_prob": t2.model_prob,
                     "EV_model": ev_calc(t2.model_prob, t2.price)
+                })
+
+            out = pd.DataFrame(results)
+            st.subheader("🎯 Model Probabilities vs. Book Odds")
+            st.dataframe(out)
+
+if btn_retrain:
+    if not api_key:
+        st.warning("Please enter your API key.")
+    else:
+        st
