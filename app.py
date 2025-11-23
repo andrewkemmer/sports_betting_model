@@ -180,8 +180,6 @@ if btn_fetch:
                 p1 = american_to_prob(t1.price)
                 p2 = american_to_prob(t2.price)
                 nv1, nv2 = remove_vig(p1, p2)
-                ev1 = ev_calc(nv1, t1.price)
-                ev2 = ev_calc(nv2, t2.price)
                 results.append({
                     "team": t1.team,
                     "odds": t1.price,
@@ -210,4 +208,9 @@ if btn_retrain:
             model, X_test, y_test, y_prob, metrics = retrain_and_log(df_new, sport=sport_key)
             st.success("Model retrained!")
             st.write("📊 Performance Metrics:")
-            st.write(f
+            st.write(f"Accuracy: {metrics['accuracy']:.3f}")
+            st.write(f"Brier Score: {metrics['brier_score']:.3f}")
+            st.write(f"Log Loss: {metrics['log_loss']:.3f}")
+            plot_calibration_curve(y_test, y_prob)
+        else:
+            st.warning("No historical data retrieved.")
