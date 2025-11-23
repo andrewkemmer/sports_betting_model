@@ -218,4 +218,14 @@ if btn_fetch:
                     "team": t2["team"],
                     "odds": t2["price"],
                     "no_vig_prob": nv2,
-                    "model
+                    "model_prob": t2["model_prob"],
+                    "EV_model": ev_calc(t2["model_prob"], t2["price"])
+                })
+
+            out = pd.DataFrame(results)
+            st.subheader("🎯 Model Probabilities vs. Book Odds")
+            st.dataframe(out)
+
+if btn_retrain:
+    if not api_key:
+       
