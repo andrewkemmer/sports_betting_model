@@ -10,13 +10,13 @@ from sklearn.model_selection import train_test_split
 from sklearn.calibration import calibration_curve
 
 # --------------------------------------------------
-# Streamlit Config
+# Streamlit config
 # --------------------------------------------------
 st.set_page_config(page_title="Sports Betting EV + ML Model", layout="wide")
 st.title("📈 Sports Betting EV Model with ML Integration")
 
 # --------------------------------------------------
-# Sidebar Inputs
+# Sidebar
 # --------------------------------------------------
 st.sidebar.header("TheOddsAPI Settings")
 api_key = st.sidebar.text_input("API Key", type="password")
@@ -28,11 +28,11 @@ region = st.sidebar.selectbox("Region", ["us", "us2", "eu", "uk"])
 market = st.sidebar.selectbox("Market", ["h2h", "spreads", "totals"])
 btn_fetch = st.sidebar.button("Fetch Live Odds")
 
-st.sidebar.header("Model Management")
-btn_retrain = st.sidebar.button("Retrain Model with Latest Results")
+st.sidebar.header("Model management")
+btn_retrain = st.sidebar.button("Retrain model with latest results")
 
 # --------------------------------------------------
-# Helper Functions
+# Helpers
 # --------------------------------------------------
 def fetch_live_odds(api_key, sport, region, market, odds_format="american"):
     url = (
@@ -59,9 +59,8 @@ def fetch_live_odds(api_key, sport, region, market, odds_format="american"):
                         "bookmaker": book_name,
                         "market": mk.get("key"),
                         "team": o.get("name"),
-                        "opponent": away if o.get("name") == home else home,
-                        "line": o.get("point"),
                         "price": o.get("price"),
+                        "line": o.get("point"),
                         "home_team": home,
                         "away_team": away
                     })
@@ -69,7 +68,7 @@ def fetch_live_odds(api_key, sport, region, market, odds_format="american"):
 
 def fetch_scores_with_odds(api_key, sport="basketball_nba", days_back=3):
     all_rows = []
-    for d in range(1, days_back+1):
+    for d in range(1, days_back + 1):
         url = f"https://api.the-odds-api.com/v4/sports/{sport}/scores/?apiKey={api_key}&daysFrom={d}"
         r = requests.get(url)
         if r.status_code != 200:
@@ -102,17 +101,21 @@ def fetch_scores_with_odds(api_key, sport="basketball_nba", days_back=3):
                 for market in book.get("markets", []):
                     if market.get("key") == "spreads":
                         for o in market.get("outcomes", []):
-                            if row["spread_close"] is None:
+                            if row["spread_close"] is None and o.get("point") is not None:
                                 row["spread_close"] = o.get("point")
                     elif market.get("key") == "totals":
                         for o in market.get("outcomes", []):
-                            if row["total_close"] is None:
+                            if row["total_close"] is None and o.get("point") is not None:
                                 row["total_close"] = o.get("point")
             all_rows.append(row)
     return pd.DataFrame(all_rows)
 
 def american_to_prob(odds):
     if odds is None:
+        return np.nan
+    try:
+        odds = float(odds)
+    except Exception:
         return np.nan
     if odds > 0:
         return 100 / (odds + 100)
@@ -129,6 +132,10 @@ def remove_vig(prob_a, prob_b):
 
 def ev_calc(prob, odds):
     if pd.isna(prob) or odds is None:
+        return np.nan
+    try:
+        odds = float(odds)
+    except Exception:
         return np.nan
     if odds > 0:
         payout = odds / 100
@@ -165,7 +172,7 @@ def plot_calibration_curve(y_true, y_prob):
     st.pyplot(fig)
 
 # --------------------------------------------------
-# Main Processing
+# Main processing
 # --------------------------------------------------
 if btn_fetch:
     if not api_key:
@@ -185,6 +192,7 @@ if btn_fetch:
                 st.info("No trained model found yet. Retrain to enable model probabilities.")
 
             if model is not None:
+                # Build per-game features
                 games = (
                     df.groupby("game_id")
                       .agg({"line": "mean", "home_team": "first", "away_team": "first"})
@@ -194,16 +202,87 @@ if btn_fetch:
                 games["total_close"] = games["spread_close"].fillna(0)
                 X_live = games[["spread_close", "total_close"]].fillna(0)
                 games["model_prob_home_win"] = model.predict_proba(X_live)[:, 1]
+
+                # Merge back and ensure canonical team columns
                 df = df.merge(
                     games[["game_id", "home_team", "away_team", "model_prob_home_win"]],
                     on="game_id",
                     how="left",
                     suffixes=("", "_games")
                 )
-                # Normalize columns
                 for col in ["home_team", "away_team"]:
                     alt = f"{col}_games"
                     if alt in df.columns:
                         df[col] = df[col].fillna(df[alt])
                         df.drop(columns=[alt], inplace=True)
+
+                # Assign per-row team probability safely
                 if {"home_team", "away_team"}.issubset(df.columns):
+                    df["model_prob"] = np.where(
+                        df["team"] == df["home_team"],
+                        df["model_prob_home_win"],
+                        1 - df["model_prob_home_win"]
+                    )
+                else:
+                    df["model_prob"] = np.nan
+                    st.warning("home_team/away_team missing after merge; model_prob set to NaN.")
+
+            # EV calculation (pair first two outcomes per game-bookmaker)
+            results = []
+            grouped = df.groupby(["game_id", "bookmaker"])
+            for (gid, book), g in grouped:
+                if len(g) < 2:
+                    continue
+                g = g.head(2)
+                t1, t2 = g.iloc[0], g.iloc[1]
+                p1 = american_to_prob(t1["price"])
+                p2 = american_to_prob(t2["price"])
+                nv1, nv2 = remove_vig(p1, p2)
+                results.append({
+                    "game_id": gid,
+                    "bookmaker": book,
+                    "team": t1["team"],
+                    "odds": t1["price"],
+                    "no_vig_prob": nv1,
+                    "model_prob": t1.get("model_prob", np.nan),
+                    "EV_model": ev_calc(t1.get("model_prob", np.nan), t1["price"])
+                })
+                results.append({
+                    "game_id": gid,
+                    "bookmaker": book,
+                    "team": t2["team"],
+                    "odds": t2["price"],
+                    "no_vig_prob": nv2,
+                    "model_prob": t2.get("model_prob", np.nan),
+                    "EV_model": ev_calc(t2.get("model_prob", np.nan), t2["price"])
+                })
+
+            out = pd.DataFrame(results)
+            st.subheader("🎯 Model Probabilities vs. Book Odds")
+            if out.empty:
+                st.info("No paired outcomes found to compute EV. Try a different market or region.")
+            else:
+                st.dataframe(out)
+
+# --------------------------------------------------
+# Retraining
+# --------------------------------------------------
+if btn_retrain:
+    if not api_key:
+        st.warning("Please enter your API key.")
+    else:
+        st.info("Retraining model...")
+        df_new = fetch_scores_with_odds(api_key, sport=sport_key, days_back=30)
+        if df_new is None or df_new.empty:
+            st.warning("No historical data retrieved.")
+        else:
+            try:
+                model, X_test, y_test, y_prob, metrics = retrain_and_log(df_new, sport=sport_key)
+                st.success("Model retrained!")
+                st.write("📊 Performance Metrics:")
+                st.write(f"Accuracy: {metrics['accuracy']:.3f}")
+                st.write(f"Brier Score: {metrics['brier_score']:.3f}")
+                st.write(f"Log Loss: {metrics['log_loss']:.3f}")
+                plot_calibration_curve(y_test, y_prob)
+            except Exception as e:
+                st.error(f"Retraining failed: {e}")
