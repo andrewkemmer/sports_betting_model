@@ -169,7 +169,7 @@ if btn_fetch:
                     "away_team": "first"
                 }).reset_index()
                 games.rename(columns={"line": "spread_close"}, inplace=True)
-                games["total_close"] = games["spread_close"]  # placeholder until totals are parsed separately
+                games["total_close"] = games["spread_close"]  # placeholder until totals parsed separately
 
                 # Step 2: Predict home win probability
                 X_live = games[["spread_close", "total_close"]].fillna(0)
@@ -219,4 +219,6 @@ if btn_retrain:
         st.warning("Please enter your API key.")
     else:
         st.info("Retraining model...")
-        df_new = fetch_scores_with_odds(api_key, sport=s
+        df_new = fetch_scores_with_odds(api_key, sport=sport_key, days_back=30)
+        if not df_new.empty:
+            model, X_test, y_test, y_prob, metrics = retrain
