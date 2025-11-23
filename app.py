@@ -227,4 +227,3 @@ if btn_fetch:
             st.dataframe(out)
 
 if btn_retrain:
-   
