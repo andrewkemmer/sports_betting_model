@@ -43,12 +43,15 @@ def fetch_live_odds(api_key, sport, region, market, odds_format="american"):
     if r.status_code != 200:
         st.error(f"Error fetching odds: {r.status_code} - {r.text}")
         return None
+
     data = r.json()
     rows = []
     for game in data:
         gid = game["id"]
         home = game["home_team"]
         away = game["away_team"]
+
+        # Always attach home_team and away_team to each row
         for book in game["bookmakers"]:
             book_name = book["title"]
             for mk in book["markets"]:
@@ -176,8 +179,11 @@ if btn_fetch:
                 games["model_prob_home_win"] = model.predict_proba(X_live)[:, 1]
 
                 # Step 3: Merge back to odds table
-                df = df.merge(games[["game_id", "home_team", "away_team", "model_prob_home_win"]],
-                              on="game_id", how="left")
+                df = df.merge(
+                    games[["game_id", "home_team", "away_team", "model_prob_home_win"]],
+                    on="game_id",
+                    how="left"
+                )
 
                 # Step 4: Assign probabilities to each team row
                 df["model_prob"] = np.where(
@@ -219,6 +225,4 @@ if btn_retrain:
         st.warning("Please enter your API key.")
     else:
         st.info("Retraining model...")
-        df_new = fetch_scores_with_odds(api_key, sport=sport_key, days_back=30)
-        if not df_new.empty:
-            model, X_test, y_test, y_prob, metrics = retrain
+        df_new = fetch_scores_with_odds(api
