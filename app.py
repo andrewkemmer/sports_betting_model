@@ -221,4 +221,7 @@ if btn_fetch:
             st.dataframe(out)
 
 if btn_retrain:
-   
+    if not api_key:
+        st.warning("Please enter your API key.")
+    else:
+        st.info("Retraining model...")
