@@ -52,18 +52,18 @@ def fetch_live_odds(api_key, sport, region, market, odds_format="american"):
         for book in game["bookmakers"]:
             book_name = book["title"]
             for mk in book["markets"]:
-                if mk["key"] != market:
-                    continue
                 outcomes = mk["outcomes"]
                 for o in outcomes:
                     rows.append({
                         "game_id": gid,
-                        "market": market,
                         "bookmaker": book_name,
+                        "market": mk["key"],
                         "team": o["name"],
                         "opponent": away if o["name"] == home else home,
                         "line": o.get("point"),
-                        "price": o["price"]
+                        "price": o["price"],
+                        "home_team": home,
+                        "away_team": away
                     })
     return pd.DataFrame(rows)
 
@@ -162,13 +162,29 @@ if btn_fetch:
                 model = None
 
             if model is not None:
-                # Build features for live games
-                df["spread_close"] = df["line"].fillna(0)
-                df["total_close"] = df["line"].fillna(0)
+                # Step 1: Build per-game features
+                games = df.groupby("game_id").agg({
+                    "line": "mean",
+                    "home_team": "first",
+                    "away_team": "first"
+                }).reset_index()
+                games.rename(columns={"line": "spread_close"}, inplace=True)
+                games["total_close"] = games["spread_close"]  # placeholder until totals are parsed separately
 
-                # Predict probabilities
-                X_live = df[["spread_close", "total_close"]].fillna(0)
-                df["model_prob_home_win"] = model.predict_proba(X_live)[:, 1]
+                # Step 2: Predict home win probability
+                X_live = games[["spread_close", "total_close"]].fillna(0)
+                games["model_prob_home_win"] = model.predict_proba(X_live)[:, 1]
+
+                # Step 3: Merge back to odds table
+                df = df.merge(games[["game_id", "home_team", "away_team", "model_prob_home_win"]],
+                              on="game_id", how="left")
+
+                # Step 4: Assign probabilities to each team row
+                df["model_prob"] = np.where(
+                    df["team"] == df["home_team"],
+                    df["model_prob_home_win"],
+                    1 - df["model_prob_home_win"]
+                )
 
             # EV calculation with no-vig
             results = []
@@ -184,15 +200,15 @@ if btn_fetch:
                     "team": t1.team,
                     "odds": t1.price,
                     "no_vig_prob": nv1,
-                    "model_prob": t1.get("model_prob_home_win", np.nan),
-                    "EV_model": ev_calc(t1.get("model_prob_home_win", nv1), t1.price)
+                    "model_prob": t1.model_prob,
+                    "EV_model": ev_calc(t1.model_prob, t1.price)
                 })
                 results.append({
                     "team": t2.team,
                     "odds": t2.price,
                     "no_vig_prob": nv2,
-                    "model_prob": t2.get("model_prob_home_win", np.nan),
-                    "EV_model": ev_calc(t2.get("model_prob_home_win", nv2), t2.price)
+                    "model_prob": t2.model_prob,
+                    "EV_model": ev_calc(t2.model_prob, t2.price)
                 })
             out = pd.DataFrame(results)
             st.subheader("🎯 Model Probabilities vs. Book Odds")
@@ -203,14 +219,4 @@ if btn_retrain:
         st.warning("Please enter your API key.")
     else:
         st.info("Retraining model...")
-        df_new = fetch_scores_with_odds(api_key, sport=sport_key, days_back=30)
-        if not df_new.empty:
-            model, X_test, y_test, y_prob, metrics = retrain_and_log(df_new, sport=sport_key)
-            st.success("Model retrained!")
-            st.write("📊 Performance Metrics:")
-            st.write(f"Accuracy: {metrics['accuracy']:.3f}")
-            st.write(f"Brier Score: {metrics['brier_score']:.3f}")
-            st.write(f"Log Loss: {metrics['log_loss']:.3f}")
-            plot_calibration_curve(y_test, y_prob)
-        else:
-            st.warning("No historical data retrieved.")
+        df_new = fetch_scores_with_odds(api_key, sport=s
