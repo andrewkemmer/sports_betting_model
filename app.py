@@ -185,12 +185,15 @@ if btn_fetch:
                     how="left"
                 )
 
-                # Step 4: Assign probabilities to each team row
-                df["model_prob"] = np.where(
-                    df["team"] == df["home_team"],
-                    df["model_prob_home_win"],
-                    1 - df["model_prob_home_win"]
-                )
+                # Step 4: Assign probabilities to each team row safely
+                if "home_team" in df.columns:
+                    df["model_prob"] = np.where(
+                        df["team"] == df["home_team"],
+                        df["model_prob_home_win"],
+                        1 - df["model_prob_home_win"]
+                    )
+                else:
+                    st.warning("home_team column missing after merge — check API response structure.")
 
             # EV calculation with no-vig
             results = []
@@ -215,13 +218,3 @@ if btn_fetch:
                     "no_vig_prob": nv2,
                     "model_prob": t2.model_prob,
                     "EV_model": ev_calc(t2.model_prob, t2.price)
-                })
-            out = pd.DataFrame(results)
-            st.subheader("🎯 Model Probabilities vs. Book Odds")
-            st.dataframe(out)
-
-if btn_retrain:
-    if not api_key:
-        st.warning("Please enter your API key.")
-    else:
-        st.info("Retraining model...")
