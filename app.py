@@ -180,4 +180,4 @@ def evaluate_predictions(df: pd.DataFrame, model):
     df["actual_total"] = df["home_score"] + df["away_score"]
     df["predicted_total_side"] = np.where(df["predicted_total"] > df["total_close"], "Over", "Under")
     df["actual_total_side"] = np.where(df["actual_total"] > df["total_close"], "Over", "Under")
-    total_acc = (df["predicted_total_side"]
+    total_acc =
