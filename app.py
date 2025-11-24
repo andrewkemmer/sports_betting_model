@@ -133,4 +133,7 @@ def predict_scores_from_lines(df:pd.DataFrame,model):
 # Evaluation
 def evaluate_predictions(df:pd.DataFrame,model):
     df=predict_scores_from_lines(df,model)
-    for col in ["home
+    for col in ["home_score","away_score","spread_close","total_close",
+                "predicted_home_score","predicted_away_score","predicted_total","predicted_margin"]:
+        if col in df.columns: df[col]=pd.to_numeric(df[col],errors="coerce")
+    df["predicted_winner"]=np.where((df["predicted_home_score"].notna())&(df["predicted_
