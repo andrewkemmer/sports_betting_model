@@ -1,5 +1,3 @@
-
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -26,9 +24,10 @@ sport_key = st.sidebar.selectbox(
 region = st.sidebar.selectbox("Region", ["us", "us2", "eu", "uk"])
 btn_fetch = st.sidebar.button("Fetch live odds")
 st.sidebar.header("Model management")
-# Limit the scores days range to the API-allowed window (commonly 1..3)
-days_back = st.sidebar.selectbox("Scores days back (scores endpoint limit)", options=[1, 2, 3], index=0)
-btn_retrain = st.sidebar.button("Retrain model (scores daysBack)")
+
+# Scores endpoint limits: The Odds API accepts daysFrom typically between 1 and 3
+days_back = st.sidebar.selectbox("Scores days back (1-3)", options=[1, 2, 3], index=0)
+btn_retrain = st.sidebar.button("Retrain model (use scores daysBack)")
 st.sidebar.markdown("Imputation for missing features")
 impute_option = st.sidebar.selectbox("Impute strategy", ["none (drop rows)", "median"])
 impute_key = "median" if impute_option == "median" else "none"
@@ -141,8 +140,11 @@ def extract_game_lines(odds_df: pd.DataFrame) -> pd.DataFrame:
 # Scores helpers (completed games only)
 # -------------------------
 def fetch_scores_with_odds(api_key, sport="basketball_nba", days_back=1):
-    # Clamp days_back to allowed range for the scores endpoint (typically 1..3)
-    days_back = int(days_back) if days_back is not None else 1
+    # Clamp days_back to allowed range for the scores endpoint (1..3)
+    try:
+        days_back = int(days_back)
+    except Exception:
+        days_back = 1
     days_back = max(1, min(days_back, 3))
 
     url = f"https://api.the-odds-api.com/v4/sports/{sport}/scores?apiKey={api_key}&daysFrom={days_back}"
@@ -215,6 +217,7 @@ def retrain_and_log(df: pd.DataFrame, sport="basketball_nba", impute="none"):
             df[col] = np.nan
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
+    # Require at least one feature per row
     df = df.dropna(subset=["spread_close", "total_close"], how="all")
     if df.empty:
         raise ValueError("No training rows with spread or total present. Acquire historical lines before retraining.")
@@ -424,6 +427,7 @@ if btn_retrain and api_key:
         scores_df = fetch_scores_with_odds(api_key, sport_key, days_back=days_back)
         if not scores_df.empty:
             try:
+                # If scores endpoint returns no lines, consider fetching odds separately and merging on game_id
                 model, X_test, y_test, y_prob, metrics = retrain_and_log(
                     scores_df, sport_key, impute=impute_key
                 )
@@ -433,5 +437,6 @@ if btn_retrain and api_key:
             except Exception as e:
                 st.error(f"Retraining failed: {e}")
         else:
-            st.warning("No completed games found for retraining.")
+            st.warning("No completed games found for retraining. If the scores endpoint returns no lines, fetch odds and merge on game_id to supply spread_close/total_close.")
+
 
