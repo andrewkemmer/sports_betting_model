@@ -155,9 +155,12 @@ def fetch_completed_games(days_back: int) -> pd.DataFrame:
 
 def build_matchup_features(games_df: pd.DataFrame, team_stats_df: pd.DataFrame):
     df = games_df.copy()
-    df = df.merge(team_stats_df.add_prefix("home_"), left_on="home_team", right_on="home_team_name", how="left")
-    df = df.merge(team_stats_df.add_prefix("away_"), left_on="away_team", right_on="away_team_name", how="left")
 
+    # Merge home team stats
+    df = df.merge(team_stats_df, left_on="home_team", right_on="team_name", how="left", suffixes=("", "_home"))
+    df = df.merge(team_stats_df, left_on="away_team", right_on="team_name", how="left", suffixes=("", "_away"))
+
+    # Now columns are duplicated with suffixes _home and _away
     feature_cols_base = [
         "points_per_game", "opp_points_per_game",
         "offensive_rating", "defensive_rating", "pace",
@@ -167,10 +170,11 @@ def build_matchup_features(games_df: pd.DataFrame, team_stats_df: pd.DataFrame):
     ]
 
     for c in feature_cols_base:
-        df[f"{c}_diff"] = df[f"home_{c}"] - df[f"away_{c}"]
+        df[f"{c}_diff"] = df[f"{c}_home"] - df[f"{c}_away"]
 
     df["win_pct_diff"] = (
-        (df["home_wins"] / df["home_games_played"]) - (df["away_wins"] / df["away_games_played"])
+        (df["wins_home"] / df["games_played_home"]) -
+        (df["wins_aw ay"] / df["games_played_away"])
     ).replace([np.inf, -np.inf], np.nan)
 
     if {"home_score", "away_score"}.issubset(df.columns):
