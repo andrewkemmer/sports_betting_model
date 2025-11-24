@@ -87,56 +87,123 @@ def fetch_scores_with_odds(api_key,sport="basketball_nba",days_back=30)->pd.Data
         df=df.drop_duplicates(subset=["home_team","away_team","date"],keep="last")
     return df
 
+
 # Model training
-def retrain_and_log(df:pd.DataFrame,sport="basketball_nba"):
-    df=df.dropna(subset=["home_score","away_score"])
-    if df.empty: raise ValueError("No completed games found to retrain.")
-    for col in ["spread_close","total_close"]:
-        if col not in df.columns: df[col]=np.nan
-        df[col]=pd.to_numeric(df[col],errors="coerce").fillna(0)
-    X=df[["spread_close","total_close"]]; y=(df["home_score"]>df["away_score"]).astype(int)
-    X_train,X_test,y_train,y_test=train_test_split(X,y,test_size=0.2,random_state=42)
-    model=GradientBoostingClassifier(); model.fit(X_train,y_train)
-    y_pred=model.predict(X_test); y_prob=model.predict_proba(X_test)[:,1]
-    metrics={"accuracy":float(accuracy_score(y_test,y_pred)),
-             "brier_score":float(brier_score_loss(y_test,y_prob)),
-             "log_loss":float(log_loss(y_test,y_prob))}
-    joblib.dump(model,f"{sport}_model.pkl")
-    return model,X_test,y_test,y_prob,metrics
+def retrain_and_log(df: pd.DataFrame, sport="basketball_nba"):
+    df = df.dropna(subset=["home_score", "away_score"])
+    if df.empty:
+        raise ValueError("No completed games found to retrain.")
+
+    for col in ["spread_close", "total_close"]:
+        if col not in df.columns:
+            df[col] = np.nan
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+    X = df[["spread_close", "total_close"]]
+    y = (df["home_score"] > df["away_score"]).astype(int)
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    model = GradientBoostingClassifier()
+    model.fit(X_train, y_train)
+
+    y_pred = model.predict(X_test)
+    y_prob = model.predict_proba(X_test)[:, 1]
+
+    metrics = {
+        "accuracy": float(accuracy_score(y_test, y_pred)),
+        "brier_score": float(brier_score_loss(y_test, y_prob)),
+        "log_loss": float(log_loss(y_test, y_prob))
+    }
+
+    joblib.dump(model, f"{sport}_model.pkl")
+    return model, X_test, y_test, y_prob, metrics
+
 
 # Predictions
-def predict_scores_from_lines(df:pd.DataFrame,model):
-    df=df.copy()
-    if "spread_close" not in df.columns: df["spread_close"]=np.nan
-    if "total_close" not in df.columns: df["total_close"]=np.nan
-    df["spread_close"]=pd.to_numeric(df["spread_close"],errors="coerce")
-    df["total_close"]=pd.to_numeric(df["total_close"],errors="coerce")
-    mask_spread=df["spread_close"].notna()
-    df["predicted_margin"]=np.nan; df["model_prob_home_win"]=np.nan; df["model_prob_away_win"]=np.nan
+def predict_scores_from_lines(df: pd.DataFrame, model):
+    df = df.copy()
+
+    if "spread_close" not in df.columns:
+        df["spread_close"] = np.nan
+    if "total_close" not in df.columns:
+        df["total_close"] = np.nan
+
+    df["spread_close"] = pd.to_numeric(df["spread_close"], errors="coerce")
+    df["total_close"] = pd.to_numeric(df["total_close"], errors="coerce")
+
+    mask_spread = df["spread_close"].notna()
+    df["predicted_margin"] = np.nan
+    df["model_prob_home_win"] = np.nan
+    df["model_prob_away_win"] = np.nan
+
     if mask_spread.any():
-        X=df.loc[mask_spread,["spread_close","total_close"]].fillna(0)
-        probs=model.predict_proba(X)[:,1]
-        df.loc[mask_spread,"model_prob_home_win"]=probs
-        df.loc[mask_spread,"model_prob_away_win"]=1-probs
-        df.loc[mask_spread,"predicted_margin"]=df.loc[mask_spread,"spread_close"]*(0.5+probs)
-    mask_total=mask_spread & df["total_close"].notna()
-    df["predicted_total"]=np.nan; df["predicted_home_score"]=np.nan; df["predicted_away_score"]=np.nan
+        X = df.loc[mask_spread, ["spread_close", "total_close"]].fillna(0)
+        probs = model.predict_proba(X)[:, 1]
+        df.loc[mask_spread, "model_prob_home_win"] = probs
+        df.loc[mask_spread, "model_prob_away_win"] = 1 - probs
+        df.loc[mask_spread, "predicted_margin"] = df.loc[mask_spread, "spread_close"] * (0.5 + probs)
+
+    mask_total = mask_spread & df["total_close"].notna()
+    df["predicted_total"] = np.nan
+    df["predicted_home_score"] = np.nan
+    df["predicted_away_score"] = np.nan
+
     if mask_total.any():
-        df.loc[mask_total,"predicted_total"]=df.loc[mask_total,"total_close"]
-        df.loc[mask_total,"predicted_home_score"]=(df.loc[mask_total,"predicted_total"]+df.loc[mask_total,"predicted_margin"])/2
-        df.loc[mask_total,"predicted_away_score"]=(df.loc[mask_total,"predicted_total"]-df.loc[mask_total,"predicted_margin"])/2
-        df.loc[mask_total,"predicted_home_score"]=df.loc[mask_total,"predicted_home_score"].round(1)
-        df.loc[mask_total,"predicted_away_score"]=df.loc[mask_total,"predicted_away_score"].round(1)
-        df.loc[mask_total,"predicted_total"]=df.loc[mask_total,"predicted_total"].round(1)
+        df.loc[mask_total, "predicted_total"] = df.loc[mask_total, "total_close"]
+        df.loc[mask_total, "predicted_home_score"] = (
+            df.loc[mask_total, "predicted_total"] + df.loc[mask_total, "predicted_margin"]
+        ) / 2
+        df.loc[mask_total, "predicted_away_score"] = (
+            df.loc[mask_total, "predicted_total"] - df.loc[mask_total, "predicted_margin"]
+        ) / 2
+
+        df.loc[mask_total, "predicted_home_score"] = df.loc[mask_total, "predicted_home_score"].round(1)
+        df.loc[mask_total, "predicted_away_score"] = df.loc[mask_total, "predicted_away_score"].round(1)
+        df.loc[mask_total, "predicted_total"] = df.loc[mask_total, "predicted_total"].round(1)
+
     return df
 
 # Evaluation
-def evaluate_predictions(df:pd.DataFrame,model):
-    df=predict_scores_from_lines(df,model)
-    for col in ["home_score","away_score","spread_close","total_close",
-                "predicted_home_score","predicted_away_score","predicted_total","predicted_margin"]:
-        if col in df.columns: df[col]=pd.to_numeric(df[col],errors="coerce")
-    df["predicted_winner"]=np.where((df["predicted_home_score"].notna())&(df["predicted_away_score"].notna())&
-                                    (df["predicted_home_score"]>=df["predicted_away_score"]),
-                                    df["home_team"],df["away_team"])
-    df["actual_winner"]=np.where((df["home_score"].notna())&(df["away_score"].
+def plot_calibration(y_true, y_prob):
+    fig, ax = plt.subplots()
+    prob_true, prob_pred = calibration_curve(y_true, y_prob, n_bins=10)
+    ax.plot(prob_pred, prob_true, marker="o", label="Model")
+    ax.plot([0, 1], [0, 1], linestyle="--", label="Perfectly calibrated")
+    ax.set_xlabel("Predicted probability")
+    ax.set_ylabel("True probability")
+    ax.legend()
+    st.pyplot(fig)
+
+
+# Streamlit UI
+if btn_fetch and api_key:
+    odds_df = fetch_live_odds(api_key, sport_key, region)
+    if not odds_df.empty:
+        lines_df = extract_game_lines(odds_df)
+        try:
+            model = joblib.load(f"{sport_key}_model.pkl")
+        except:
+            st.warning("No trained model found. Please retrain first.")
+            model = None
+
+        if model:
+            preds = predict_scores_from_lines(lines_df, model)
+            st.subheader("Predicted Scores")
+            st.dataframe(preds[["home_team","away_team","predicted_home_score","predicted_away_score","predicted_total","model_prob_home_win","model_prob_away_win"]])
+        else:
+            st.info("Model not available yet.")
+
+if btn_retrain and api_key:
+    scores_df = fetch_scores_with_odds(api_key, sport_key, days_back=30)
+    if not scores_df.empty:
+        try:
+            model, X_test, y_test, y_prob, metrics = retrain_and_log(scores_df, sport_key)
+            st.success("Model retrained successfully!")
+            st.json(metrics)
+            plot_calibration(y_test, y_prob)
+        except Exception as e:
+            st.error(f"Retraining failed: {e}")
+    else:
+        st.warning("No completed games found for retraining.")
+
+
