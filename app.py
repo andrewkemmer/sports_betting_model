@@ -10,13 +10,13 @@ from sklearn.model_selection import train_test_split
 from sklearn.calibration import calibration_curve
 
 # --------------------------------------------------
-# Streamlit Config
+# Streamlit config
 # --------------------------------------------------
 st.set_page_config(page_title="Sports Betting EV + ML Model", layout="wide")
 st.title("📈 Sports Betting EV Model with ML Integration")
 
 # --------------------------------------------------
-# Sidebar Inputs
+# Sidebar
 # --------------------------------------------------
 st.sidebar.header("TheOddsAPI Settings")
 api_key = st.sidebar.text_input("API Key", type="password")
@@ -25,16 +25,15 @@ sport_key = st.sidebar.selectbox(
     ["baseball_mlb", "basketball_nba", "americanfootball_nfl", "icehockey_nhl"]
 )
 region = st.sidebar.selectbox("Region", ["us", "us2", "eu", "uk"])
-btn_fetch = st.sidebar.button("Fetch Live Odds")
+btn_fetch = st.sidebar.button("Fetch live odds")
 
-st.sidebar.header("Model Management")
-btn_retrain = st.sidebar.button("Retrain Model with Latest Results")
+st.sidebar.header("Model management")
+btn_retrain = st.sidebar.button("Retrain model (last 30 days)")
 
 # --------------------------------------------------
-# Helper Functions
+# Helpers: live odds and lines
 # --------------------------------------------------
 def fetch_live_odds(api_key, sport, region, odds_format="american"):
-    # Always request h2h, spreads, and totals together
     markets = "h2h,spreads,totals"
     url = (
         f"https://api.the-odds-api.com/v4/sports/{sport}/odds"
@@ -69,18 +68,56 @@ def fetch_live_odds(api_key, sport, region, odds_format="american"):
 def extract_game_lines(df):
     spreads = df[df["market"] == "spreads"].groupby("game_id")["line"].mean().rename("spread_close")
     totals = df[df["market"] == "totals"].groupby("game_id")["line"].mean().rename("total_close")
-    games = df.groupby("game_id").agg({
-        "home_team": "first",
-        "away_team": "first"
-    }).reset_index()
+    games = df.groupby("game_id").agg({"home_team": "first", "away_team": "first"}).reset_index()
     games = games.merge(spreads.reset_index(), on="game_id", how="left")
     games = games.merge(totals.reset_index(), on="game_id", how="left")
     return games
 
+# --------------------------------------------------
+# Helpers: historical scores (for retrain & evaluation)
+# --------------------------------------------------
+def fetch_scores_with_odds(api_key, sport="basketball_nba", days_back=30):
+    # Note: The scores endpoint may not include market lines; spread_close/total_close can be NaN.
+    all_rows = []
+    for d in range(1, days_back + 1):
+        url = f"https://api.the-odds-api.com/v4/sports/{sport}/scores/?apiKey={api_key}&daysFrom={d}"
+        r = requests.get(url)
+        if r.status_code != 200:
+            continue
+        for game in r.json():
+            home = game.get("home_team")
+            away = game.get("away_team")
+            scores = game.get("scores", [])
+            home_score = None
+            away_score = None
+            if isinstance(scores, list) and len(scores) >= 2:
+                try:
+                    s_home = next((s for s in scores if s.get("name") == home), scores[0])
+                    s_away = next((s for s in scores if s.get("name") == away), scores[1])
+                    home_score = int(s_home.get("score")) if s_home.get("score") else None
+                    away_score = int(s_away.get("score")) if s_away.get("score") else None
+                except Exception:
+                    pass
+            all_rows.append({
+                "date": game.get("commence_time"),
+                "home_team": home,
+                "away_team": away,
+                "home_score": home_score,
+                "away_score": away_score,
+                # Lines may be missing; kept as NaN (no fallbacks)
+                "spread_close": None,
+                "total_close": None
+            })
+    return pd.DataFrame(all_rows)
+
+# --------------------------------------------------
+# Model training and evaluation
+# --------------------------------------------------
 def retrain_and_log(df, sport="basketball_nba"):
     df = df.dropna(subset=["home_score", "away_score"])
     if df.empty:
         raise ValueError("No completed games found to retrain.")
+    # Ensure feature columns exist; fill NaN with 0 for training only
     for col in ["spread_close", "total_close"]:
         if col not in df.columns:
             df[col] = np.nan
@@ -98,37 +135,62 @@ def retrain_and_log(df, sport="basketball_nba"):
     return model, X_test, y_test, y_prob, {"accuracy": acc, "brier_score": brier, "log_loss": ll}
 
 def predict_scores_from_lines(df, model):
+    # No fallbacks: only populate predictions when both spread_close and total_close are present
     df = df.copy()
+    for col in ["spread_close", "total_close"]:
+        if col not in df.columns:
+            df[col] = np.nan
     mask = df["spread_close"].notna() & df["total_close"].notna()
-    if mask.any():
-        X = df.loc[mask, ["spread_close", "total_close"]].fillna(0)
-        df.loc[mask, "model_prob_home_win"] = model.predict_proba(X)[:, 1]
-        df.loc[mask, "predicted_margin"] = df.loc[mask, "spread_close"] * (2 * df.loc[mask, "model_prob_home_win"] - 1)
-        df.loc[mask, "predicted_total"] = df.loc[mask, "total_close"]
-        df.loc[mask, "predicted_home_score"] = (df.loc[mask, "predicted_total"] + df.loc[mask, "predicted_margin"]) / 2
-        df.loc[mask, "predicted_away_score"] = df.loc[mask, "predicted_total"] - df.loc[mask, "predicted_home_score"]
-        df.loc[mask, "predicted_home_score"] = df.loc[mask, "predicted_home_score"].round(1)
-        df.loc[mask, "predicted_away_score"] = df.loc[mask, "predicted_away_score"].round(1)
-        df.loc[mask, "predicted_total"] = df.loc[mask, "predicted_total"].round(1)
+    if not mask.any():
+        # Create columns as NaN for consistent display
+        df["model_prob_home_win"] = np.nan
+        df["predicted_margin"] = np.nan
+        df["predicted_total"] = np.nan
+        df["predicted_home_score"] = np.nan
+        df["predicted_away_score"] = np.nan
+        return df
+
+    X = df.loc[mask, ["spread_close", "total_close"]].fillna(0)
+    df.loc[mask, "model_prob_home_win"] = model.predict_proba(X)[:, 1]
+    df.loc[mask, "predicted_margin"] = df.loc[mask, "spread_close"] * (2 * df.loc[mask, "model_prob_home_win"] - 1)
+    df.loc[mask, "predicted_total"] = df.loc[mask, "total_close"]
+    df.loc[mask, "predicted_home_score"] = (df.loc[mask, "predicted_total"] + df.loc[mask, "predicted_margin"]) / 2
+    df.loc[mask, "predicted_away_score"] = df.loc[mask, "predicted_total"] - df.loc[mask, "predicted_home_score"]
+    df.loc[mask, "predicted_home_score"] = df.loc[mask, "predicted_home_score"].round(1)
+    df.loc[mask, "predicted_away_score"] = df.loc[mask, "predicted_away_score"].round(1)
+    df.loc[mask, "predicted_total"] = df.loc[mask, "predicted_total"].round(1)
     return df
 
 def evaluate_predictions(df, model):
+    # Compute predictions (only where lines exist)
     df = predict_scores_from_lines(df, model)
-    df["predicted_winner"] = np.where(df["predicted_home_score"] >= df["predicted_away_score"], df["home_team"], df["away_team"])
+
+    # Moneyline accuracy
+    df["predicted_winner"] = np.where(
+        df["predicted_home_score"] >= df["predicted_away_score"], df["home_team"], df["away_team"]
+    )
     df["actual_winner"] = np.where(df["home_score"] > df["away_score"], df["home_team"], df["away_team"])
-    moneyline_acc = (df["predicted_winner"] == df["actual_winner"]).mean()
+    moneyline_mask = df["predicted_winner"].notna() & df["actual_winner"].notna()
+    moneyline_acc = (df.loc[moneyline_mask, "predicted_winner"] == df.loc[moneyline_mask, "actual_winner"]).mean() if moneyline_mask.any() else np.nan
+
+    # Total accuracy (Over/Under vs total_close)
     df["actual_total"] = df["home_score"] + df["away_score"]
     df["predicted_total_side"] = np.where(df["predicted_total"] > df["total_close"], "Over", "Under")
     df["actual_total_side"] = np.where(df["actual_total"] > df["total_close"], "Over", "Under")
-    total_acc = (df["predicted_total_side"] == df["actual_total_side"]).mean()
+    total_mask = df["predicted_total"].notna() & df["total_close"].notna() & df["actual_total"].notna()
+    total_acc = (df.loc[total_mask, "predicted_total_side"] == df.loc[total_mask, "actual_total_side"]).mean() if total_mask.any() else np.nan
+
+    # Spread accuracy (ATS vs spread_close)
     df["actual_margin"] = df["home_score"] - df["away_score"]
     df["predicted_spread_cover"] = np.where(df["predicted_margin"] > df["spread_close"], "Home", "Away")
     df["actual_spread_cover"] = np.where(df["actual_margin"] > df["spread_close"], "Home", "Away")
-    spread_acc = (df["predicted_spread_cover"] == df["actual_spread_cover"]).mean()
+    spread_mask = df["predicted_margin"].notna() & df["spread_close"].notna() & df["actual_margin"].notna()
+    spread_acc = (df.loc[spread_mask, "predicted_spread_cover"] == df.loc[spread_mask, "actual_spread_cover"]).mean() if spread_mask.any() else np.nan
+
     return {
-        "moneyline_accuracy": float(moneyline_acc),
-        "total_accuracy": float(total_acc),
-        "spread_accuracy": float(spread_acc),
+        "moneyline_accuracy": moneyline_acc,
+        "total_accuracy": total_acc,
+        "spread_accuracy": spread_acc,
         "df": df
     }
 
@@ -160,7 +222,91 @@ def plot_calibration_curve(y_true, y_prob):
     st.pyplot(fig)
 
 # --------------------------------------------------
-# Live Odds
+# Live odds view
 # --------------------------------------------------
 if btn_fetch:
     if not api_key:
+        st.warning("Please enter your API key.")
+    else:
+        odds_df = fetch_live_odds(api_key, sport_key, region)
+        if odds_df is None or odds_df.empty:
+            st.warning("No live odds returned.")
+        else:
+            st.subheader("🔍 Raw odds")
+            st.dataframe(odds_df)
+
+            # Try load model
+            try:
+                model = joblib.load(f"{sport_key}_model.pkl")
+            except Exception:
+                model = None
+                st.info("No trained model found yet. Retrain to enable predictions.")
+
+            if model is not None:
+                games = extract_game_lines(odds_df)
+                if games.empty:
+                    st.info("No spread/total lines found for current games.")
+                else:
+                    pred_live = predict_scores_from_lines(games, model)
+                    st.subheader("🧮 Live predicted scores (requires both spread & total)")
+                    st.dataframe(pred_live[[
+                        "home_team", "away_team", "spread_close", "total_close",
+                        "predicted_home_score", "predicted_away_score", "predicted_total"
+                    ]])
+
+# --------------------------------------------------
+# Retraining + accuracy dashboard
+# --------------------------------------------------
+if btn_retrain:
+    if not api_key:
+        st.warning("Please enter your API key.")
+    else:
+        st.info("Retraining model...")
+        hist_df = fetch_scores_with_odds(api_key, sport=sport_key, days_back=30)
+        if hist_df is None or hist_df.empty:
+            st.warning("No historical data retrieved.")
+        else:
+            try:
+                model, X_test, y_test, y_prob, metrics = retrain_and_log(hist_df, sport=sport_key)
+                st.success("Model retrained!")
+
+                st.subheader("📊 Model calibration")
+                st.write(f"Accuracy (test split): {metrics['accuracy']:.3f}")
+                st.write(f"Brier Score: {metrics['brier_score']:.3f}")
+                st.write(f"Log Loss: {metrics['log_loss']:.3f}")
+                plot_calibration_curve(y_test, y_prob)
+
+                # Evaluate vs actual outcomes (moneyline, total, spread)
+                eval_results = evaluate_predictions(hist_df, model)
+
+                st.subheader("🏁 Accuracy vs actual outcomes (last 30 days)")
+                ml_acc = eval_results["moneyline_accuracy"]
+                tot_acc = eval_results["total_accuracy"]
+                spr_acc = eval_results["spread_accuracy"]
+                st.metric("Moneyline winner accuracy", f"{(ml_acc if pd.notna(ml_acc) else 0):.2%}")
+                st.metric("Total score accuracy (O/U)", f"{(tot_acc if pd.notna(tot_acc) else 0):.2%}")
+                st.metric("Spread accuracy (ATS)", f"{(spr_acc if pd.notna(spr_acc) else 0):.2%}")
+
+                # Detailed table
+                cols = [
+                    "date", "home_team", "away_team",
+                    "home_score", "away_score",
+                    "spread_close", "total_close",
+                    "predicted_home_score", "predicted_away_score", "predicted_total",
+                    "predicted_winner", "actual_winner",
+                    "actual_total", "predicted_total_side", "actual_total_side",
+                    "actual_margin", "predicted_spread_cover", "actual_spread_cover"
+                ]
+                show_cols = [c for c in cols if c in eval_results["df"].columns]
+                st.dataframe(eval_results["df"][show_cols])
+
+                # Save and plot accuracy trends
+                history = save_accuracy_trends(eval_results, sport=sport_key)
+                st.subheader("📈 Accuracy trends over time")
+                chart_df = history.copy()
+                if "timestamp" in chart_df.columns:
+                    chart_df["timestamp"] = pd.to_datetime(chart_df["timestamp"])
+                    chart_df.set_index("timestamp", inplace=True)
+                st.line_chart(chart_df[["moneyline_accuracy", "total_accuracy", "spread_accuracy"]])
+            except Exception as e:
+                st.error(f"Retraining failed: {e}")
