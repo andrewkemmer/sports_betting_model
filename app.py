@@ -5,6 +5,7 @@ import requests
 import joblib
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.metrics import accuracy_score, brier_score_loss, log_loss
@@ -43,8 +44,6 @@ btn_evaluate = st.sidebar.button("Evaluate predictions")
 # Odds utilities
 # --------------------------------------------------
 def american_to_prob(odds):
-    if odds is None:
-        return np.nan
     try:
         odds = float(odds)
     except Exception:
@@ -63,8 +62,6 @@ def remove_vig(prob_a, prob_b):
     return prob_a / total, prob_b / total
 
 def ev_calc(prob, odds):
-    if pd.isna(prob) or odds is None:
-        return np.nan
     try:
         odds = float(odds)
     except Exception:
@@ -88,14 +85,13 @@ def fetch_live_odds_h2h(api_key, sport, region="us", odds_format="american"):
         home = game.get("home_team")
         away = game.get("away_team")
         for book in game.get("bookmakers", []):
-            book_name = book.get("title")
             for mk in book.get("markets", []):
                 if mk.get("key") != "h2h":
                     continue
                 for o in mk.get("outcomes", []):
                     rows.append({
                         "game_id": gid,
-                        "bookmaker": book_name,
+                        "bookmaker": book.get("title"),
                         "team": o.get("name"),
                         "price": o.get("price"),
                         "home_team": home,
@@ -115,7 +111,6 @@ def get_teams_stats_df(season: int) -> pd.DataFrame:
                 return float(x) if x is not None else np.nan
             except Exception:
                 return np.nan
-
         rows.append({
             "team_name": t.name,
             "games_played": n(t.games_played),
@@ -196,7 +191,30 @@ def retrain_stats_model(season: int, days_back: int):
     enriched_df, X, feature_cols = build_matchup_features(games_df, team_stats_df)
     y = enriched_df["home_win"].astype(int)
 
+    # Train/test split
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    model = GradientBoostingClassifier
+    model = GradientBoostingClassifier()
+    model.fit(X_train, y_train)
 
+    # Predictions
+    y_pred = model.predict(X_test)
+    y_prob = model.predict_proba(X_test)[:, 1]
+
+    # Metrics
+    acc = accuracy_score(y_test, y_pred)
+    brier = brier_score_loss(y_test, y_prob)
+    ll = log_loss(y_test, y_prob)
+
+    # Save model bundle (includes stats for later predictions)
+    joblib.dump(
+        {
+            "model": model,
+            "feature_cols": feature_cols,
+            "season": season,
+            "team_stats_df": team_stats_df
+        },
+        "basketball_nba_stats_model.pkl"
+    )
+
+    return model, X_test, y_test, y_prob, {"accuracy": acc, "brier_score": brier, "log_loss": ll}, team_stats_df
 
