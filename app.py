@@ -106,8 +106,12 @@ def get_teams_stats_df(season: int) -> pd.DataFrame:
                 return float(x) if x is not None else np.nan
             except Exception:
                 return np.nan
+
+        # Use .name if available, else fallback to abbreviation
+        team_id = getattr(t, "name", None) or getattr(t, "abbreviation", None)
+
         rows.append({
-            "team_name": t.name,
+            "team_id": team_id,
             "games_played": n(t.games_played),
             "wins": n(t.wins),
             "losses": n(t.losses),
@@ -157,10 +161,10 @@ def build_matchup_features(games_df: pd.DataFrame, team_stats_df: pd.DataFrame):
     df = games_df.copy()
 
     # Merge home team stats
-    df = df.merge(team_stats_df, left_on="home_team", right_on="team_name", how="left", suffixes=("", "_home"))
-    df = df.merge(team_stats_df, left_on="away_team", right_on="team_name", how="left", suffixes=("", "_away"))
+    df = df.merge(team_stats_df.add_suffix("_home"), left_on="home_team", right_on="team_id_home", how="left")
+    # Merge away team stats
+    df = df.merge(team_stats_df.add_suffix("_away"), left_on="away_team", right_on="team_id_away", how="left")
 
-    # Now columns are duplicated with suffixes _home and _away
     feature_cols_base = [
         "points_per_game", "opp_points_per_game",
         "offensive_rating", "defensive_rating", "pace",
@@ -174,7 +178,7 @@ def build_matchup_features(games_df: pd.DataFrame, team_stats_df: pd.DataFrame):
 
     df["win_pct_diff"] = (
         (df["wins_home"] / df["games_played_home"]) -
-        (df["wins_aw ay"] / df["games_played_away"])
+        (df["wins_away"] / df["games_played_away"])
     ).replace([np.inf, -np.inf], np.nan)
 
     if {"home_score", "away_score"}.issubset(df.columns):
