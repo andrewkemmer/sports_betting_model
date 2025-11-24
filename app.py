@@ -8,8 +8,6 @@ from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.metrics import accuracy_score, brier_score_loss, log_loss
 from sklearn.model_selection import train_test_split
 from sklearn.calibration import calibration_curve
-from sklearn.impute import SimpleImputer
-from pathlib import Path
 
 st.set_page_config(page_title="Sports Betting EV + ML Model", layout="wide")
 st.title("📈 Sports Betting EV Model with ML Integration")
@@ -169,6 +167,7 @@ if btn_fetch and api_key:
         st.dataframe(odds_df)
 
 if btn_retrain and api_key:
-    with
+    with st.spinner("Fetching scores + odds and retraining..."):
+        df_train = build_training_frame(api_key, sport_key
 
 
