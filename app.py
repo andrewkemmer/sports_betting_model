@@ -182,11 +182,11 @@ def predict_scores_from_lines(df: pd.DataFrame, model):
 def evaluate_predictions(df: pd.DataFrame, model):
     df = predict_scores_from_lines(df, model)
 
+    # Moneyline accuracy
     df["predicted_winner"] = np.where(
-        df["predicted_home_score"].notna() & df["predicted_away_score"].notna() &
+        (df["predicted_home_score"].notna()) & (df["predicted_away_score"].notna()) &
         (df["predicted_home_score"] >= df["predicted_away_score"]),
         df["home_team"], df["away_team"]
     )
     df["actual_winner"] = np.where(
-        df["home_score"].notna() & df["away_score"].notna() &
         (df["home
