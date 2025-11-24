@@ -166,4 +166,4 @@ def evaluate_predictions(df, model):
     df["actual_margin"] = df["home_score"] - df["away_score"]
     df["predicted_spread_cover"] = np.where(df["predicted_margin"] > df["spread_close"], "Home", "Away")
     df["actual_spread_cover"] = np.where(df["actual_margin"] > df["spread_close"], "Home", "Away")
-    spread_acc = (df["predicted_spread_cover"] == df["actual_spread_cover"]).
+    spread_acc = (df["predicted_spread_cover"] == df["actual_sp
