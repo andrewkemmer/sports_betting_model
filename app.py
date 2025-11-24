@@ -130,8 +130,10 @@ def get_teams_stats_df(season: int) -> pd.DataFrame:
 def fetch_completed_games(days_back: int) -> pd.DataFrame:
     end = datetime.utcnow().date()
     start = end - timedelta(days=days_back)
-    # Corrected: no nba=True argument
-    box = Boxscores(start.strftime("%Y%m%d"), end.strftime("%Y%m%d"))
+
+    # Pass date objects, not strings
+    box = Boxscores(start, end)
+
     rows = []
     for date_str, games in box.games.items():
         for g in games:
