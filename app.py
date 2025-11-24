@@ -165,7 +165,7 @@ def predict_scores_from_lines(df: pd.DataFrame, model):
 def evaluate_predictions(df: pd.DataFrame, model):
     df = predict_scores_from_lines(df, model)
 
-    # Moneyline
+    # Moneyline accuracy
     df["predicted_winner"] = np.where(
         df["predicted_home_score"] >= df["predicted_away_score"],
         df["home_team"], df["away_team"]
@@ -176,6 +176,135 @@ def evaluate_predictions(df: pd.DataFrame, model):
     )
     moneyline_acc = (df["predicted_winner"] == df["actual_winner"]).mean()
 
-    # Total (O/U)
+    # Total (Over/Under) accuracy
     df["actual_total"] = df["home_score"] + df["away_score"]
     df["predicted_total_side"] = np.where(df["predicted_total"] > df["total_close"], "Over", "Under")
+    df["actual_total_side"] = np.where(df["actual_total"] > df["total_close"], "Over", "Under")
+    total_acc = (df["predicted_total_side"] == df["actual_total_side"]).mean()
+
+    # Spread (ATS) accuracy
+    df["actual_margin"] = df["home_score"] - df["away_score"]
+    df["predicted_spread_cover"] = np.where(df["predicted_margin"] > df["spread_close"], "Home", "Away")
+    df["actual_spread_cover"] = np.where(df["actual_margin"] > df["spread_close"], "Home", "Away")
+    spread_acc = (df["predicted_spread_cover"] == df["actual_spread_cover"]).mean()
+
+    return {
+        "moneyline_accuracy": float(moneyline_acc),
+        "total_accuracy": float(total_acc),
+        "spread_accuracy": float(spread_acc),
+        "df": df
+    }
+
+def save_accuracy_trends(results, sport="basketball_nba"):
+    history_file = f"{sport}_accuracy_history.csv"
+    new_row = pd.DataFrame([{
+        "timestamp": pd.Timestamp.now(),
+        "moneyline_accuracy": results["moneyline_accuracy"],
+        "total_accuracy": results["total_accuracy"],
+        "spread_accuracy": results["spread_accuracy"]
+    }])
+    try:
+        history = pd.read_csv(history_file)
+        history = pd.concat([history, new_row], ignore_index=True)
+    except FileNotFoundError:
+        history = new_row
+    history.to_csv(history_file, index=False)
+    return history
+
+def plot_calibration_curve(y_true, y_prob):
+    prob_true, prob_pred = calibration_curve(y_true, y_prob, n_bins=10, strategy="uniform")
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.plot(prob_pred, prob_true, marker='o', label='Model')
+    ax.plot([0, 1], [0, 1], linestyle='--', color='gray', label='Perfect Calibration')
+    ax.set_xlabel("Mean Predicted Probability")
+    ax.set_ylabel("Fraction of Positives")
+    ax.set_title("Calibration Curve")
+    ax.legend()
+    st.pyplot(fig)
+
+# -------------------------
+# Live odds button handler
+# -------------------------
+if btn_fetch:
+    if not api_key:
+        st.warning("Please enter your API key.")
+    else:
+        odds_df = fetch_live_odds(api_key, sport_key, region)
+        if odds_df.empty:
+            st.warning("No live odds returned.")
+        else:
+            st.subheader("🔍 Raw odds")
+            st.dataframe(odds_df)
+
+            # Try to load trained model
+            try:
+                model = joblib.load(f"{sport_key}_model.pkl")
+            except Exception:
+                model = None
+                st.info("No trained model found yet. Retrain to enable predictions.")
+
+            if model is not None:
+                games = extract_game_lines(odds_df)
+                if games.empty:
+                    st.info("No spread/total lines found for current games.")
+                else:
+                    pred_live = predict_scores_from_lines(games, model)
+                    st.subheader("🧮 Live predicted scores")
+                    st.dataframe(pred_live[[
+                        "home_team", "away_team", "spread_close", "total_close",
+                        "predicted_home_score", "predicted_away_score", "predicted_total"
+                    ]])
+
+# -------------------------
+# Retraining button handler
+# -------------------------
+if btn_retrain:
+    if not api_key:
+        st.warning("Please enter your API key.")
+    else:
+        st.info("Retraining model...")
+        hist_df = fetch_scores_with_odds(api_key, sport=sport_key, days_back=30)
+        if hist_df.empty:
+            st.warning("No historical data retrieved.")
+        else:
+            try:
+                model, X_test, y_test, y_prob, metrics = retrain_and_log(hist_df, sport=sport_key)
+                st.success("Model retrained!")
+
+                st.subheader("📊 Model calibration")
+                st.write(f"Accuracy (test split): {metrics['accuracy']:.3f}")
+                st.write(f"Brier Score: {metrics['brier_score']:.3f}")
+                st.write(f"Log Loss: {metrics['log_loss']:.3f}")
+                plot_calibration_curve(y_test, y_prob)
+
+                eval_results = evaluate_predictions(hist_df, model)
+
+                st.subheader("🏁 Accuracy vs actual outcomes (last 30 days)")
+                st.metric("Moneyline winner accuracy", f"{eval_results['moneyline_accuracy']:.2%}")
+                st.metric("Total score accuracy (O/U)", f"{eval_results['total_accuracy']:.2%}")
+                st.metric("Spread accuracy (ATS)", f"{eval_results['spread_accuracy']:.2%}")
+
+                # Ensure all display columns exist
+                cols = [
+                    "date", "home_team", "away_team",
+                    "home_score", "away_score",
+                    "spread_close", "total_close",
+                    "predicted_home_score", "predicted_away_score", "predicted_total",
+                    "predicted_winner", "actual_winner",
+                    "actual_total", "predicted_total_side", "actual_total_side",
+                    "actual_margin", "predicted_spread_cover", "actual_spread_cover"
+                ]
+                df_show = eval_results["df"].copy()
+                for c in cols:
+                    if c not in df_show.columns:
+                        df_show[c] = np.nan
+                st.dataframe(df_show[cols])
+
+                history = save_accuracy_trends(eval_results, sport=sport_key)
+                st.subheader("📈 Accuracy trends over time")
+                chart_df = history.copy()
+                chart_df["timestamp"] = pd.to_datetime(chart_df["timestamp"])
+                chart_df = chart_df.set_index("timestamp")
+                st.line_chart(chart_df[["moneyline_accuracy", "total_accuracy", "spread_accuracy"]])
+            except Exception as e:
+                st.error(f"Retraining failed: {e}")
