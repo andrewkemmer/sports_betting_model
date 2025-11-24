@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -195,8 +194,4 @@ def predict_scores_from_lines(df: pd.DataFrame, model):
 
     if mask_total.any():
         df.loc[mask_total, "predicted_total"] = df.loc[mask_total, "total_close"]
-        df.loc[mask_total, "predicted_home_score"] = (
-            df.loc[mask_total, "predicted_total"] + df.loc[mask_total, "predicted_margin"]
-        ) / 2
-        df.loc[mask_total, "predicted_away_score"] = (
-            df
+        df.loc[mask_total
