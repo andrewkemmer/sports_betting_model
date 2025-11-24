@@ -1,3 +1,5 @@
+
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -24,7 +26,9 @@ sport_key = st.sidebar.selectbox(
 region = st.sidebar.selectbox("Region", ["us", "us2", "eu", "uk"])
 btn_fetch = st.sidebar.button("Fetch live odds")
 st.sidebar.header("Model management")
-btn_retrain = st.sidebar.button("Retrain model (last 30 days)")
+# Limit the scores days range to the API-allowed window (commonly 1..3)
+days_back = st.sidebar.selectbox("Scores days back (scores endpoint limit)", options=[1, 2, 3], index=0)
+btn_retrain = st.sidebar.button("Retrain model (scores daysBack)")
 st.sidebar.markdown("Imputation for missing features")
 impute_option = st.sidebar.selectbox("Impute strategy", ["none (drop rows)", "median"])
 impute_key = "median" if impute_option == "median" else "none"
@@ -136,9 +140,11 @@ def extract_game_lines(odds_df: pd.DataFrame) -> pd.DataFrame:
 # -------------------------
 # Scores helpers (completed games only)
 # -------------------------
-def fetch_scores_with_odds(api_key, sport="basketball_nba", days_back=30):
-    rows = []
-    # IMPORTANT: remove extra slash before query to avoid 422
+def fetch_scores_with_odds(api_key, sport="basketball_nba", days_back=1):
+    # Clamp days_back to allowed range for the scores endpoint (typically 1..3)
+    days_back = int(days_back) if days_back is not None else 1
+    days_back = max(1, min(days_back, 3))
+
     url = f"https://api.the-odds-api.com/v4/sports/{sport}/scores?apiKey={api_key}&daysFrom={days_back}"
     try:
         r = requests.get(url, timeout=30)
@@ -148,6 +154,7 @@ def fetch_scores_with_odds(api_key, sport="basketball_nba", days_back=30):
     if r.status_code != 200:
         st.error(f"Error fetching scores: {r.status_code} - {r.text}")
         return pd.DataFrame()
+    rows = []
     for game in r.json():
         if not game.get("completed"):
             continue
@@ -414,7 +421,7 @@ if btn_fetch and api_key:
 
 if btn_retrain and api_key:
     with st.spinner("Fetching historical scores and retraining..."):
-        scores_df = fetch_scores_with_odds(api_key, sport_key, days_back=30)
+        scores_df = fetch_scores_with_odds(api_key, sport_key, days_back=days_back)
         if not scores_df.empty:
             try:
                 model, X_test, y_test, y_prob, metrics = retrain_and_log(
@@ -427,5 +434,4 @@ if btn_retrain and api_key:
                 st.error(f"Retraining failed: {e}")
         else:
             st.warning("No completed games found for retraining.")
-
 
