@@ -106,8 +106,27 @@ def retrain_and_log(df: pd.DataFrame, sport="basketball_nba"):
     model = GradientBoostingClassifier()
     model.fit(X_train, y_train)
 
+# Insert this before calling model.predict_proba
+X = df.loc[mask_spread, ["spread_close", "total_close"]].astype(float)
+st.write("DEBUG: X shape:", X.shape)
+st.write("DEBUG: X head:", X.head(10))
+st.write("DEBUG: X describe:", X.describe())
+st.write("DEBUG: X nunique:", X.nunique())
+    
     y_pred = model.predict(X_test)
     y_prob = model.predict_proba(X_test)[:, 1]
+
+# After loading model or before predicting
+try:
+    st.write("DEBUG: model has predict_proba:", hasattr(model, "predict_proba"))
+    st.write("DEBUG: model classes:", getattr(model, "classes_", "unknown"))
+except Exception as e:
+    st.write("DEBUG: model inspect error:", e)
+
+# After getting probs
+probs = model.predict_proba(X.fillna(0))[:, 1]
+st.write("DEBUG: probs shape:", probs.shape)
+st.write("DEBUG: unique probs (rounded):", np.unique(np.round(probs, 6)))
 
     metrics = {
         "accuracy": float(accuracy_score(y_test, y_pred)),
