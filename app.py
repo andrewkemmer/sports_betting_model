@@ -77,7 +77,7 @@ def extract_game_lines(odds_df: pd.DataFrame) -> pd.DataFrame:
     return games
 
 # -------------------------
-# Helpers: scores
+# Helpers: scores with deduplication
 # -------------------------
 def fetch_scores_with_odds(api_key, sport="basketball_nba", days_back=30) -> pd.DataFrame:
     rows = []
@@ -87,20 +87,25 @@ def fetch_scores_with_odds(api_key, sport="basketball_nba", days_back=30) -> pd.
         if r.status_code != 200:
             continue
         for game in r.json():
+            gid = game.get("id")  # some versions include id on scores endpoint
             home = game.get("home_team")
             away = game.get("away_team")
+            date = game.get("commence_time")
+
             scores = game.get("scores", [])
             home_score, away_score = None, None
             if isinstance(scores, list):
                 try:
                     s_home = next((s for s in scores if s.get("name") == home), None)
                     s_away = next((s for s in scores if s.get("name") == away), None)
-                    home_score = int(s_home.get("score")) if s_home and s_home.get("score") else None
-                    away_score = int(s_away.get("score")) if s_away and s_away.get("score") else None
+                    home_score = int(s_home.get("score")) if s_home and s_home.get("score") is not None else None
+                    away_score = int(s_away.get("score")) if s_away and s_away.get("score") is not None else None
                 except Exception:
-                    pass
+                    home_score, away_score = None, None
+
             rows.append({
-                "date": game.get("commence_time"),
+                "game_id": gid,
+                "date": date,
                 "home_team": home,
                 "away_team": away,
                 "home_score": home_score,
@@ -108,30 +113,53 @@ def fetch_scores_with_odds(api_key, sport="basketball_nba", days_back=30) -> pd.
                 "spread_close": None,
                 "total_close": None
             })
-    return pd.DataFrame(rows)
+
+    df = pd.DataFrame(rows)
+
+    # Deduplicate: prefer game_id if present, else fall back to team/date composite
+    if "game_id" in df.columns and df["game_id"].notna().any():
+        df = df.drop_duplicates(subset=["game_id"], keep="last")
+    else:
+        df = df.drop_duplicates(subset=["home_team", "away_team", "date"], keep="last")
+
+    # Coerce numeric columns to avoid NoneType issues downstream
+    for col in ["home_score", "away_score", "spread_close", "total_close"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    return df
 
 # -------------------------
 # Model training (home win probability classifier)
 # -------------------------
 def retrain_and_log(df: pd.DataFrame, sport="basketball_nba"):
+    # Keep only completed games
     df = df.dropna(subset=["home_score", "away_score"])
     if df.empty:
         raise ValueError("No completed games found to retrain.")
+
+    # Ensure feature columns exist and numeric
     for col in ["spread_close", "total_close"]:
         if col not in df.columns:
             df[col] = np.nan
-    X = df[["spread_close", "total_close"]].fillna(0)
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+    X = df[["spread_close", "total_close"]]
     y = (df["home_score"] > df["away_score"]).astype(int)
+
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     model = GradientBoostingClassifier()
     model.fit(X_train, y_train)
+
     y_pred = model.predict(X_test)
     y_prob = model.predict_proba(X_test)[:, 1]
+
     metrics = {
         "accuracy": float(accuracy_score(y_test, y_pred)),
         "brier_score": float(brier_score_loss(y_test, y_prob)),
         "log_loss": float(log_loss(y_test, y_prob))
     }
+
     joblib.dump(model, f"{sport}_model.pkl")
     return model, X_test, y_test, y_prob, metrics
 
@@ -140,13 +168,18 @@ def retrain_and_log(df: pd.DataFrame, sport="basketball_nba"):
 # -------------------------
 def predict_scores_from_lines(df: pd.DataFrame, model):
     df = df.copy()
+
     # Ensure required columns exist
     if "spread_close" not in df.columns:
         df["spread_close"] = np.nan
     if "total_close" not in df.columns:
         df["total_close"] = np.nan
 
-    # Compute win probabilities using classifier
+    # Numeric coercion
+    df["spread_close"] = pd.to_numeric(df["spread_close"], errors="coerce")
+    df["total_close"] = pd.to_numeric(df["total_close"], errors="coerce")
+
+    # Compute win probabilities using classifier when spread exists
     mask_spread = df["spread_close"].notna()
     df["predicted_margin"] = np.nan
     df["model_prob_home_win"] = np.nan
@@ -174,6 +207,7 @@ def predict_scores_from_lines(df: pd.DataFrame, model):
         df.loc[mask_total, "predicted_away_score"] = (
             df.loc[mask_total, "predicted_total"] - df.loc[mask_total, "predicted_margin"]
         ) / 2
+
         df.loc[mask_total, "predicted_home_score"] = df.loc[mask_total, "predicted_home_score"].round(1)
         df.loc[mask_total, "predicted_away_score"] = df.loc[mask_total, "predicted_away_score"].round(1)
         df.loc[mask_total, "predicted_total"] = df.loc[mask_total, "predicted_total"].round(1)
